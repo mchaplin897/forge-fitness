@@ -1034,7 +1034,7 @@ async function saveCredentials() {
   // Step 3: write headers
   const ok = await ensureSheetsHeaders(token);
   if (!ok) {
-    setStatus('✗ Connected but could not write to sheet. Make sure the sheet is shared with your service account email (' + clientEmail + ') as Editor.', 'err');
+    setStatus('✗ Token obtained but sheet write failed. Open browser DevTools (F12) → Console tab to see the exact API error. Common causes: sheet not shared with ' + clientEmail + ' as Editor, or tab names (Sets/Sessions/Checkins) don\'t exist in the sheet.', 'err');
     return;
   }
 
@@ -1110,35 +1110,43 @@ async function getAccessToken() {
 
 // ── Sheet read/write ─────────────────────────────────────────────────────────
 async function sheetsAppend(tabName, values, token) {
-  if (!sheetsReady) return false;
   try {
     const tok = token || await getAccessToken();
-    if (!tok) return false;
+    if (!tok) { console.error('sheetsAppend: no token'); return false; }
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetsConfig.sheetId}/values/${encodeURIComponent(tabName)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values })
     });
-    if (!resp.ok) { console.error('Sheets append failed:', await resp.text()); }
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      console.error('sheetsAppend failed:', resp.status, JSON.stringify(err));
+    }
     return resp.ok;
   } catch(e) {
-    console.error('sheetsAppend error:', e);
+    console.error('sheetsAppend fetch error:', e);
     return false;
   }
 }
 
 async function sheetsRead(tabName, range, token) {
-  if (!sheetsReady) return null;
   try {
     const tok = token || await getAccessToken();
     if (!tok) return null;
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetsConfig.sheetId}/values/${encodeURIComponent(tabName + '!' + range)}`;
     const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + tok } });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      console.error('sheetsRead error:', resp.status, err);
+      return null;
+    }
     const data = await resp.json();
     return data.values || [];
-  } catch(e) { return null; }
+  } catch(e) {
+    console.error('sheetsRead fetch error:', e);
+    return null;
+  }
 }
 
 async function ensureSheetsHeaders(token) {
@@ -1147,16 +1155,23 @@ async function ensureSheetsHeaders(token) {
     if (!tok) return false;
 
     async function writeHeaderIfEmpty(tab, headers) {
+      console.log('Checking tab:', tab);
       const existing = await sheetsRead(tab, 'A1', tok);
+      console.log('Existing data in', tab, ':', existing);
       if (!existing || existing.length === 0) {
-        return await sheetsAppend(tab, [headers], tok);
+        console.log('Writing headers to', tab);
+        const ok = await sheetsAppend(tab, [headers], tok);
+        console.log('Write result for', tab, ':', ok);
+        return ok;
       }
+      console.log('Tab', tab, 'already has headers — skipping');
       return true;
     }
 
     const r1 = await writeHeaderIfEmpty('Sets',     ['Date','Week','Day','Exercise','Set #','Weight (lbs)','Reps','RPE']);
     const r2 = await writeHeaderIfEmpty('Sessions', ['Date','Week','Day','Workout Name','Pump (1-5)','Notes']);
     const r3 = await writeHeaderIfEmpty('Checkins', ['Date','Week','Weight (lbs)','Bench 1RM','Squat 1RM','Pull-up Max','Energy (1-10)','Sleep (hrs)']);
+    console.log('Header results — Sets:', r1, 'Sessions:', r2, 'Checkins:', r3);
     return r1 && r2 && r3;
   } catch(e) {
     console.error('ensureSheetsHeaders error:', e);
